@@ -12,8 +12,6 @@ import time
 import matplotlib.pyplot as plt
 # import datasets
 # import methods
-from dataset import load
-import cot
 
 
 class OTDTW:
@@ -152,6 +150,8 @@ class OTDTW:
                     C3 = np.tensordot(np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), pi_DTW), self.Y,
                                       axes=([1, 2], [2, 1]))
                     res = C1[:, None] + C2[None, :] - 2 * C3
+                    print('similar', np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), pi_DTW).shape, self.Y.shape,
+                          C3.shape)
                 elif self.metric == "l1":
                     m1, m2 = self.get_warp_matrices(cl)
                     C1 = np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), m1.T)
@@ -639,6 +639,31 @@ if __name__ == "__main__":
         n_values = np.max(y) + 1
         return np.eye(n_values)[y]
 
+
+    from tslearn.datasets import CachedDatasets
+
+    Xs, y_train, _, _ = CachedDatasets().load_dataset("Trace")
+    y = y_train - 1
+    Xt = Xs.copy()
+    y_target = y.copy()
+    Xt[np.where(y_target == 0), :] = np.roll(Xt[np.where(y_target == 0), :], 10)  # *0.9
+    Xt[np.where(y_target == 1), :] = np.roll(Xt[np.where(y_target == 1), :], 20)
+    Xt[np.where(y_target == 2), :] = np.roll(Xt[np.where(y_target == 2), :], 30)  # *1.5
+    Xt[np.where(y_target == 3), :] = np.roll(Xt[np.where(y_target == 3), :], 40)  # * .5
+    Xs2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
+    Xs2[:, :, 0] = Xs.squeeze(-1)
+    Xs2[:, :, 1] = Xs.squeeze(-1)
+    Xt2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
+    Xt2[:, :, 0] = Xt.squeeze(-1)
+    Xt2[:, :, 1] = Xt.squeeze(-1)
+
+    TtoB = OTDTW(Xs2, Xt2, y_train, metric="l2")
+    OT, Cost_OT, score_OT = TtoB.main_training()
+    yt_onehot = to_onehot(y_train.astype(int))
+    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
+    accuracy = np.mean(y_pred == y_target.astype(int))
+    print("GW balanced", accuracy)
+
     # Data preparation
     """tarn = np.load("tarn_features.npy")
     tarn_label = np.load('tarn_label.npy')
@@ -704,7 +729,7 @@ if __name__ == "__main__":
     accuracy = np.mean(y_pred == bzh_label_b.astype(int))
     print("COOT balanced", accuracy)"""
 
-    tarn_b = np.load('tarn_features_b.npy')
+    """tarn_b = np.load('tarn_features_b.npy')
     tarn_label_b = np.load('tarn_label_b.npy')
     bzh_b = np.load('bzh_features_b.npy')
     bzh_label_b = np.load('bzh_label_b.npy')
@@ -714,7 +739,7 @@ if __name__ == "__main__":
     yt_onehot = to_onehot(tarn_label_b.astype(int))
     y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
     accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print(accuracy, "class balanced")
+    print(accuracy, "class balanced")"""
 
     """"print("l1")
 

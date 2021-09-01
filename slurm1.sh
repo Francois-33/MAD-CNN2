@@ -1,7 +1,8 @@
 #!/bin/bash -l
 
-#SBATCH --gres gpu:4
-#SBATCH -c 4
+#SBATCH --gres gpu:1
+#SBATCH -c 2
+#SBATCH -p longrun
 
 setcuda 11.3
 

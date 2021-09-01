@@ -25,6 +25,7 @@ NDVI_tarn_min = np.empty(shape=(6, tarn.shape[1]))
 NDVI_bzh_min = np.empty(shape=(6, bzh.shape[1]))
 NDVI_tarn_max = np.empty(shape=(6, tarn.shape[1]))
 NDVI_bzh_max = np.empty(shape=(6, bzh.shape[1]))
+color_index = ['blue', 'orange', 'red', 'green', 'pink', 'purple']
 class_name = ["Wheat", "Corn", "Barley", "Permanent \nMeadow", "Rape", "Temporary \nMeadow"]
 for i in range(0, 6):
     NDVI_bzh_mean[i] = np.mean(NDVI_bzh[bzh_labels == i], axis=0)
@@ -34,16 +35,16 @@ for i in range(0, 6):
     NDVI_bzh_max[i] = np.quantile(NDVI_bzh[bzh_labels == i],  0.75, axis=0)
     NDVI_tarn_max[i] = np.quantile(NDVI_tarn[tarn_labels == i], 0.75, axis=0)
     plt.subplot(211)
-    plt.plot(NDVI_tarn_mean[i], marker="+")
-    plt.fill_between(np.arange(72), NDVI_tarn_min[i], NDVI_tarn_max[i], alpha=0.2)
+    plt.plot(NDVI_tarn_mean[i], marker="+", color=color_index[i])
+    plt.fill_between(np.arange(72), NDVI_tarn_min[i], NDVI_tarn_max[i], alpha=0.2, color=color_index[i])
     plt.ylim([0, 1])
     plt.subplot(212)
-    plt.plot(NDVI_bzh_mean[i], marker="+", label=class_name[i])
-    plt.fill_between(np.arange(58), NDVI_bzh_min[i], NDVI_bzh_max[i], alpha=0.2)
+    plt.plot(NDVI_bzh_mean[i], marker="+", label=class_name[i], color=color_index[i])
+    plt.fill_between(np.arange(58), NDVI_bzh_min[i], NDVI_bzh_max[i], alpha=0.2, color=color_index[i])
     plt.ylim([0, 1])
-plt.legend(bbox_to_anchor=(1.1, 1.4))
+plt.legend(bbox_to_anchor=(0.87, 1.58))
 # plt.scatter(np.arange(1412), NDVI_bzh_mean, c=bzh_labels, marker="o")
-plt.suptitle('Average of NDVI for Tarn (top) and Brittany (bottom)')
+plt.suptitle('Average of NDVI for Tarn (top) and Brittany (bottom)               ')
 plt.show()
 
 for i in range(3, 6):

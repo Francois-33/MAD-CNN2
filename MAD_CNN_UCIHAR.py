@@ -2,16 +2,21 @@ import sklearn.metrics
 import torch
 import torch.nn as nn
 import numpy.random as npr
-import ot
+import os
 import time
+import pickle
 import tslearn.metrics as tslm
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from torch.profiler import profile, record_function, ProfilerActivity
 import numpy as np
+import argparse
+import warnings
+# from CNN import CNNMAD, Data_set
+from CNN_class_balanced import CNNMAD, Data_set
 
 
-class OTDTW:
+"""class OTDTW:
     def __init__(self, X, Y, classe=None, weights_X=None, weights_Y=None, metric="l1", settings=0, classe_unique=None,
                  previous_DTW=None):
         X = X.cpu().numpy()
@@ -268,15 +273,6 @@ class OTDTW:
         return stop
 
     def DTW_barycentring_mapping(self):
-        """We work for each class in the source dataset and at the end we concatenate all the
-          transferred source datasets per class to return a single \hat{X}^{s} of size
-          (n_{s}, T^{*}, d), where T^{*} is the highest number of DTW steps amongst each class.
-          For the other classes with lesser DTW steps, the series will be padded with 0 at the end.
-
-          we start by transporting both source and target datasets' timestamps
-          into the extended dimension of aligned time. Then, we apply barycentric mapping to obtain
-          the source dataset transferred into the realm of the target."""
-
         all_num_path = []
         for cl in self.classe_unique:
             all_num_path.append(int(self.pi_DTW_idx[cl].sum()))
@@ -296,8 +292,10 @@ class OTDTW:
         cost = {"Cost": []}
         stop = False
         current_init = 0
+        time_mastering = []
         # Begin training
         while stop is not True and current_init < max_init:
+            time_start = time.time()
             if (current_init != 0) or (first_step_DTW is False):
                 Cost_OT = self.mat_cost_OT()
                 if reg != 0.:
@@ -321,8 +319,13 @@ class OTDTW:
                 stop = self.stopping_criterion(last_pi_DTW)
             last_pi_DTW = self.pi_DTW_idx.copy()
             current_init = current_init + 1
+            time_end = time.time()
+            time_mastering.append(time_end - time_start)
+        if barycenter:
+            transp_X = self.DTW_barycentring_mapping()
+            return self.OT_tilde, self.pi_DTW_idx, Cost_OT, score_OT, transp_X
         else:
-            return self.OT_tilde, self.pi_DTW_idx, Cost_OT, score_OT
+            return self.OT_tilde, self.pi_DTW_idx, Cost_OT, score_OT, time_mastering, current_init
 
 
 class Data_set(Dataset):
@@ -341,9 +344,8 @@ class Data_set(Dataset):
 
 
 class CNNMAD(nn.Module):
-    def __init__(self, name, train_source_data, batchsize, channel, lambd=1., alpha=0.0001, beta=0.0001, eval_step=4000,
-                 train_target_data=None, valid_target_data=None, valid_source_data=None, test_source_data=None,
-                 test_target_data=None, MAD_class=True, reg=0., num_class=6, lr=0.001):
+    def __init__(self, name, traindata, batchsize, channel, lambd=1., alpha=0.0001, beta=0.0001,
+                 testdata=None, validdata=None, validsourcedata=None, MAD_class=True, reg=0., num_class=6, lr=0.0001):
         super(CNNMAD, self).__init__()
         # torch.manual_seed(10)
         self.name = name
@@ -351,37 +353,32 @@ class CNNMAD(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.reg = reg
-        self.eval_step = eval_step
         self.lr = lr
         self.num_class = num_class
         self.last_accuracy = 0
         self.DTW = None
-        self.trainDataLoader = DataLoader(train_source_data, batch_size=batchsize, shuffle=True, num_workers=2)
-        if train_target_data is not None:
-            self.testDataLoader = DataLoader(train_target_data, batch_size=batchsize, shuffle=True, num_workers=2)
-        if valid_target_data is not None:
-            self.validDataLoader = DataLoader(valid_target_data, batch_size=1024, shuffle=True, num_workers=2)
-        if valid_source_data is not None:
-            self.validSoucreDataLoader = DataLoader(valid_source_data, batch_size=1024, shuffle=True, num_workers=2)
-        if test_source_data is not None:
-            self.testSourceData = DataLoader(test_source_data, batch_size=1024, shuffle=True, num_workers=2)
-        if test_target_data is not None:
-            self.TestTargetData = DataLoader(test_target_data, batch_size=1024, shuffle=True, num_workers=2)
+        self.trainDataLoader = DataLoader(traindata, batch_size=batchsize, shuffle=True, num_workers=2)
+        if testdata is not None:
+            self.testDataLoader = DataLoader(testdata, batch_size=batchsize, shuffle=True, num_workers=2)
+        if validdata is not None:
+            self.validDataLoader = DataLoader(validdata, batch_size=1024, shuffle=True, num_workers=2)
+        if validsourcedata is not None:
+            self.validSoucreDataLoader = DataLoader(validsourcedata, batch_size=1024, shuffle=True, num_workers=2)
         self.batchsize = batchsize
-        self.conv1 = nn.Sequential(nn.Conv1d(in_channels=channel, out_channels=32, kernel_size=8, stride=1,
-                                             padding="same", bias=True),
-                                   # nn.BatchNorm1d(num_features=128),
+        self.conv1 = nn.Sequential(nn.Conv1d(in_channels=channel, out_channels=128, kernel_size=8, stride=1,
+                                             padding="same", bias=False),
+                                   nn.BatchNorm1d(num_features=128),
                                    nn.ReLU())
-        self.conv2 = nn.Sequential(nn.Conv1d(in_channels=32, out_channels=32, kernel_size=5, stride=1, padding="same",
-                                             bias=True),
-                                   # nn.BatchNorm1d(num_features=256),
+        self.conv2 = nn.Sequential(nn.Conv1d(in_channels=128, out_channels=256, kernel_size=5, stride=1, padding="same",
+                                             bias=False),
+                                   nn.BatchNorm1d(num_features=256),
                                    nn.ReLU())
-        self.conv3 = nn.Sequential(nn.Conv1d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding="same",
-                                             bias=True),
-                                   # nn.BatchNorm1d(num_features=128),
+        self.conv3 = nn.Sequential(nn.Conv1d(in_channels=256, out_channels=128, kernel_size=3, stride=1, padding="same",
+                                             bias=False),
+                                   nn.BatchNorm1d(num_features=128),
                                    nn.ReLU())
 
-        self.classifier = nn.Linear(32, num_class)
+        self.classifier = nn.Linear(128, num_class)
         self.softmax = nn.Softmax(1)
 
         torch.nn.init.xavier_uniform_(self.conv1[0].weight)
@@ -400,13 +397,6 @@ class CNNMAD(nn.Module):
         self.lowest_loss = 1000000
         self.loss_count = []
         self.loss_MAD_count = []
-        """if torch.cuda.is_available():
-            self.conv1 = self.conv1.cuda()
-            self.conv2 = self.conv2.cuda()
-            self.conv3 = self.conv3.cuda()
-            self.classifier = self.classifier.cuda()
-            self.crossLoss = self.crossLoss.cuda()
-            self.softmax = self.softmax.cuda()"""
         self.MAD_class = MAD_class
 
     def mad(self, out_conv_train, out_conv_test, labels):
@@ -415,41 +405,14 @@ class CNNMAD(nn.Module):
                 labels = None
             mad = OTDTW(out_conv_train.transpose(1, 2), out_conv_test.transpose(1, 2), labels, metric="l2",
                         classe_unique=np.arange(self.num_class), previous_DTW=self.DTW)
-            self._OT, self.DTW, self._cost_OT, score = mad.main_training(reg=self.reg, first_step_DTW=False)
+            self._OT, self.DTW, self._cost_OT, score, timing, it = mad.main_training(reg=self.reg, first_step_DTW=False)
 
     def loss_CNN_MAD(self, labels, out_source, out_target, softmax_target):
-        """
-        Compute the loss for the CNN part of CNN-MAD
-        :param labels: the true labels of the source batch
-        :param OT: An OT matrix from MAD
-        :param DTW: DTW matrices from MAD, one per class
-        :param out_source: out of the convolutions for the source batch
-        :param out_target: out of the convolutions for the target batch
-        :param softmax_target: out of the classifier for the target batch
-        :return: The loss
-
-        Y0 = torch.zeros(size=(5))
-        Y1 = torch.zeros(size=(5))
-        labels = torch.cat((Y0, Y1), 0)
-        OT = torch.eyes(size=(10, 10))
-        DTW = [torch.eyes(size=(20, 20))]
-        out_source = torch.ones(size=(10, 20, 2))
-        out_target = torch.zeros(size=(10, 20, 2))
-        t0 = torch.zeros(size=(10))
-        t1 = torch.ones(size(10))
-        softmax_target = torch.cat((t0, t1), 1)
-
-        Loss = loss_CNN_MAD(labels, OT, DTW, out_source, out_target, softmax_target)
-        """
         out_source_sq = out_source ** 2
         out_target_sq = out_target ** 2
         OT = torch.from_numpy(self._OT)
         res = torch.empty(size=(self.current_batchtrain_, self.current_batchtest_))
         mat_CE = torch.zeros(size=(self.current_batchtrain_, self.current_batchtest_))
-        """if torch.cuda.is_available():
-            OT = OT.cuda()
-            res = res.cuda()
-            mat_CE = mat_CE.cuda()"""
         if self.MAD_class:
             loop_iteration = torch.max(labels).item() + 1
         else:
@@ -458,8 +421,6 @@ class CNNMAD(nn.Module):
             idx_cl = torch.where(labels == cl)
             pi_DTW = self.DTW[cl]
             pi_DTW = torch.from_numpy(pi_DTW)
-            """if torch.cuda.is_available():
-                pi_DTW = pi_DTW.cuda()"""
             pi_DTW = pi_DTW.float()
             C1 = torch.matmul(out_source_sq[idx_cl], torch.sum(pi_DTW, dim=1)).sum(-1)
             C2 = torch.matmul(out_target_sq, torch.sum(pi_DTW.T, dim=1)).sum(-1)
@@ -473,8 +434,6 @@ class CNNMAD(nn.Module):
             n_values = torch.max(y) + 1
             return torch.eye(n_values)[y]
         classe_onehot = to_onehot(labels)
-        """if torch.cuda.is_available():
-            classe_onehot = classe_onehot.cuda()"""
 
         def cross_entropy(p, q):
             result = p * torch.log(q)
@@ -516,20 +475,16 @@ class CNNMAD(nn.Module):
             self.new_iteration()
             self.optimizer.zero_grad()
             inputs, labels = data
-            """if torch.cuda.is_available():
-                inputs = inputs.cuda()
-                labels = labels.cuda()"""
             self.set_current_batchsize(inputs.shape[0])
             out, out_conv = self.forward(inputs.transpose(1, 2))
             loss = self.lambd * self.crossLoss(out.float(), labels)
             if (self.alpha != 0) or (self.beta != 0):
+                # Make sure the batch is changing
                 try:
                     inputs_test = next(self.iter_dataloader)
                 except StopIteration:
                     self.iter_dataloader = iter(self.testDataLoader)
                     inputs_test = next(self.iter_dataloader)
-                """if torch.cuda.is_available():
-                    inputs_test = inputs_test.cuda()"""
                 self.set_current_batchsize(inputs_test.shape[0], train=False)
                 out_test, out_conv_test = self.forward(inputs_test.transpose(1, 2), train=False)
                 self.mad(out_conv, out_conv_test, labels)
@@ -544,30 +499,14 @@ class CNNMAD(nn.Module):
             self.loss_count.append(loss.detach().item())
 
     def fit(self, epochs, done_epochs=0):
-        """
-        fits a CNN-MAD model during some epochs
-        :param epochs: number of epochs to be done for training
-        :return: asks for nothing in return
-
-        X0 = torch.arange(100).repeat(50)
-        X1 = torch.arange(50).repeat(50, 2)
-        Y0 = torch.zeros(size=(50))
-        Y1 = torch.zeros(size=(50))
-        series = torch.cat((X0, X1), 0)
-        labels = torch.cat((Y0, Y1), 0)
-        target = torch.arange(100, 200).repeat(50)
-        source = data_set(series, labels)
-        target = data_set(target)
-
-        model = CNNMAD(source, target, 32, True)
-        model.fit()
-        """
         self.epoch = self.epoch + done_epochs
-        while self.iteration < epochs:
+        while self.epoch < epochs:
             self.new_epoch()
             self.iter_dataloader = iter(self.testDataLoader)
             self.train_epoch()
-            if (self.iteration % self.eval_step == 0) or (self.iteration == 1) or (self.iteration == epochs):
+            if self.epoch % 1000 == 0:
+                print("epoch ", self.epoch, "alpha ", self.alpha, "beta ", self.beta, "learning rate ", self.lr,
+                      "batchsize ", self.batchsize)
                 current_loss_source, len_source = self.test_epoch(domain="source")
                 current_loss_target, len_target = self.test_epoch(domain="target")
                 current_loss = (len_source * current_loss_source + len_target * current_loss_target) / \
@@ -577,25 +516,25 @@ class CNNMAD(nn.Module):
                     best_model = "_best_model_"
                 else:
                     best_model = ""
-                torch.save(self.state_dict(), "/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) +
+                torch.save(self.state_dict(), "/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) +
                            best_model + '.pt')
                 loss_save = np.array(self.loss_count)
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) + best_model + 'loss.npy',
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) + best_model + 'loss.npy',
                         loss_save)
                 if (self.alpha != 0) or (self.beta != 0):
                     loss_mad_save = np.asarray(self.loss_MAD_count)
-                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) + best_model +
+                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) + best_model +
                             'loss_mad.npy', loss_mad_save)
-                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) + best_model +
+                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) + best_model +
                             '_OTcost.npy', self._cost_OT)
-                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) + best_model + '_OT.npy',
+                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) + best_model + '_OT.npy',
                             self._OT)
-                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.iteration) + best_model +
-                            '_DTW.npy', self.DTW)
-                print("iteration ", self.iteration, "alpha ", self.alpha, "beta ", self.beta, "learning rate ", self.lr,
+                    np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + str(self.epoch) + best_model + '_DTW.npy',
+                            self.DTW)
+                print("epoch ", self.epoch, "alpha ", self.alpha, "beta ", self.beta, "learning rate ", self.lr,
                       "batchsize ", self.batchsize, best_model)
 
-        return self.iteration
+        return self.epoch
 
     def new_epoch(self):
         self.epoch += 1
@@ -614,9 +553,6 @@ class CNNMAD(nn.Module):
             correct = 0
             for iteration, data in enumerate(ValidDataset):
                 inputs, target = data
-                """if torch.cuda.is_available():
-                    inputs = inputs.cuda()
-                    target = target.cuda()"""
                 self.set_current_batchsize(inputs.shape[0])
                 out, out_cnn = self.forward(inputs.transpose(1, 2))
                 out_cnn_mean = out_cnn.mean(2)
@@ -626,15 +562,15 @@ class CNNMAD(nn.Module):
                 correct += pred.eq(target.data.view_as(pred)).cpu().sum()
                 # np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + "_OTcost_.npy",
                 #         self._cost_OT)
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + str(self.iteration) + "_valid_rout_conv.npy",
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + "_valid_rout_conv.npy",
                         out_cnn.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + str(self.iteration) + "_valid_out_conv.npy",
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + "_valid_out_conv.npy",
                         out_cnn_mean.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + str(self.iteration) + "_valid_prediction.npy",
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + "_valid_prediction.npy",
                         pred.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + str(self.iteration) + "_valid_target.npy",
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + "_valid_target.npy",
                         target.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + str(self.iteration) + "_valid_confusion_mat.npy",
+                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + domain + "_valid_confusion_mat.npy",
                         sklearn.metrics.confusion_matrix(target.cpu(), pred.cpu()))
             len_data = len(ValidDataset.dataset)
             loss /= len_data
@@ -644,20 +580,18 @@ class CNNMAD(nn.Module):
                                                                        100. * correct / len_data))
         return loss, len_data
 
-    def evaluate(self, dataset_name="target", name_complement=None):
+    def evaluate(self, test_data, dataset_name="test", inner=False):
         self.eval()
-        if dataset_name == "target":
-            test_data = self.TestTargetData
-        if dataset_name == "source":
-            test_data = self.TestSourceData
+        if inner is False:
+            test_data = DataLoader(test_data, batch_size=self.batchsize, shuffle=True)
         with torch.no_grad():
             loss = 0
             correct = 0
             for iteration, data in enumerate(test_data):
                 inputs, target = data
-                """if torch.cuda.is_available():
+                if torch.cuda.is_available():
                     inputs = inputs.cuda()
-                    target = target.cuda()"""
+                    target = target.cuda()
                 self.set_current_batchsize(inputs.shape[0])
                 out, out_cnn = self.forward(inputs.transpose(1, 2))
                 out_cnn_mean = out_cnn.mean(2)
@@ -665,17 +599,8 @@ class CNNMAD(nn.Module):
 
                 pred = out.data.max(1, keepdim=True)[1]
                 correct += pred.eq(target.data.view_as(pred)).cpu().sum()
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + name_complement + "_test_rout_conv.npy",
-                        out_cnn.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + name_complement + "_test_out_conv.npy",
-                        out_cnn_mean.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + name_complement +"_test_prediction.npy",
-                        pred.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + name_complement +"_test_target.npy",
-                        target.cpu())
-                np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + name_complement +"_test_confusion_mat.npy",
-                        sklearn.metrics.confusion_matrix(target.cpu(), pred.cpu()))
-
+                # np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + "_" + dataset_name + "_OTcost_.npy",
+                #         self._cost_OT)
             loss /= len(test_data.dataset)
 
         print('Average loss: {:.4f}, Accuracy: {}/{} ({:.3f}%)'.format(loss, correct, len(test_data.dataset),
@@ -693,25 +618,190 @@ class CNNMAD(nn.Module):
         self.beta = beta
 
     def set_name(self, new_name):
-        self.name = new_name
+        self.name = new_name"""
 
-    def forward_MAD(self, train=True):
-        if train:
-            inputs, labels = next(iter(self.trainDataLoader))
-            out_conv = self.forward(inputs.transpose(1, 2))
-            train_test = "train"
+if __name__ == '__main__':
+    # Hyperparameters :
+    # Alpha = 0.01, 0.001, 0.0001
+    # Beta = 0.01, 0.001, 0.0001
+    # LR = 0.01, 0.001
+    # batchsize = 128, 256
+    # Early stopping every 1000 epochs (on 5000)
+
+    # Sacrificed pair
+    # 14-19
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p1', '--pair1', type=int, help='The first half of the pair')
+    parser.add_argument('-p2', '--pair2', type=int, help='The second half of the pair')
+    parser.add_argument('-data', '--dataset', type=str, help="Which dataset to take between HAR and TarnBZH")
+    parser.add_argument('-bs', '--batchsize', type=int, help='The batchsize')
+    parser.add_argument("-a", "--alpha", type=float, help="Alpha")
+    parser.add_argument("-b", "--beta", type=float, help='Beta')
+    parser.add_argument('-lr', "--learning_rate", type=float, help="The learning rate")
+    parser.add_argument('-p', "--path", type=bool)
+    parser.add_argument('-e', "--epochs", type=int)
+    parser.add_argument('-bm', "--bigmodel", type=str)
+    parser.add_argument('-c', "--classe", type=str)
+    parser.add_argument('-n', "--name", type=str)
+
+    args, _ = parser.parse_known_args()
+    classe = True
+    if args.classe == "False":
+        classe = False
+
+    bigmodel = True
+    if args.bigmodel == "False":
+        bigmodel = False
+
+    def to_onehot(y):
+        n_values = np.max(y) + 1
+        return np.eye(n_values)[y]
+
+    def from_numpy_to_torch(filename, float_or_long=True):
+        data = np.load(filename)
+        data_t = torch.from_numpy(data)
+        if float_or_long:
+            data_t = data_t.type(torch.float)
         else:
-            inputs, labels = next(iter(self.testDataLoader))
-            out_conv = self.forward(inputs.transpose(1, 2))
-            train_test = "test"
+            data_t = data_t.type(torch.long)
+        return data_t
 
-        self.mad(out_conv, out_conv, labels)
+    if args.dataset == 'HAR':
+        chan = 9
+        cn = 6
 
-        np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + train_test + str(self.iteration) + 'DTW_forward_MAD.npy',
-                self.DTW)
-        np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + train_test + str(self.iteration) + 'OT_forward_MAD.npy',
-                self._OT)
-        np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + train_test + str(self.iteration) +
-                'OT_Cost_forward_MAD.npy', self._cost_OT)
-        np.save("/share/home/fpainblanc/MAD-CNN/" + self.name + train_test + str(self.iteration) + 'Conv_test.npy',
-                out_conv.detach().numpy())
+        source = args.pair1
+        target = args.pair2
+        # Train source dataset
+        print('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) + 'train.npy')
+        train_source = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                           'train.npy')
+        train_source_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                                 'train_labels.npy', float_or_long=False)
+        # Valid source dataset
+        valid_source = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                           'valid.npy')
+        valid_source_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                                 'valid_labels.npy', float_or_long=False)
+        # Test source dataset
+        test_source = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                          'test.npy')
+        test_source_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(source) +
+                                                'test_labels.npy', float_or_long=False)
+        # Train target dataset (no labels)
+        train_target = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                           'train.npy')
+        train_target_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                                 'train_labels.npy', float_or_long=False)
+        # Valid source dataset
+        valid_target = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                           'valid.npy')
+        valid_target_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                                 'valid_labels.npy', float_or_long=False)
+        # Test target dataset
+        test_target = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                          'test.npy')
+        test_target_label = from_numpy_to_torch('/share/home/fpainblanc/MAD-CNN/numpy_data/ucihar_' + str(target) +
+                                                'test_labels.npy', float_or_long=False)
+    if args.dataset == "TARNBZH":
+        # Train source dataset
+        cn = 6
+        chan = 10
+        if args.path:
+            path = '/share/home/fpainblanc/MAD-CNN/numpy_data/'
+        else:
+            path = "/home/adr2.local/painblanc_f/Desktop/bzh_datasets/"
+        train_source = from_numpy_to_torch(path + 'tarnbzh_1train.npy')
+        train_source_label = from_numpy_to_torch(path + 'tarnbzh_1train_labels.npy', float_or_long=False)
+
+        valid_source = from_numpy_to_torch(path + 'tarnbzh_1valid.npy')
+        valid_source_label = from_numpy_to_torch(path + 'tarnbzh_1valid_labels.npy', float_or_long=False)
+
+        test_source = from_numpy_to_torch(path + 'tarnbzh_1test.npy')
+        test_source_label = from_numpy_to_torch(path + 'tarnbzh_1test_labels.npy', float_or_long=False)
+
+        train_target = from_numpy_to_torch(path + 'tarnbzh_2train.npy')
+        train_target_labels = from_numpy_to_torch(path + 'tarnbzh_2train_labels.npy', float_or_long=False)
+
+        valid_target = from_numpy_to_torch(path + 'tarnbzh_2valid.npy')
+        valid_target_label = from_numpy_to_torch(path + 'tarnbzh_2valid_labels.npy', float_or_long=False)
+
+        test_target = from_numpy_to_torch(path + 'tarnbzh_2test.npy')
+        test_target_label = from_numpy_to_torch(path + 'tarnbzh_2test_labels.npy', float_or_long=False)
+    if args.dataset == 'Trace':
+        cn = 4
+        chan = 2
+        from tslearn.datasets import CachedDatasets
+        Xs, y_train, _, _ = CachedDatasets().load_dataset("Trace")
+        y = y_train - 1  # everything between 0 and 1
+        Xt = Xs.copy()
+        y_target = y.copy()
+        """for i in range(0, 4):
+            shift = i * 20
+            for j in range(1, shift):
+                Xt[np.where(y_target == i), j] = Xt[np.where(y_target == i), shift]
+                Xs[np.where(y_target == i), Xs.shape[1] - j] = Xs[np.where(y_target == i), Xs.shape[1] - shift]"""
+        Xt[np.where(y_target == 0), :] = np.roll(Xt[np.where(y_target == 0), :], 10)
+        Xt[np.where(y_target == 1), :] = np.roll(Xt[np.where(y_target == 1), :], 20)
+        Xt[np.where(y_target == 2), :] = np.roll(Xt[np.where(y_target == 2), :], 30)
+        Xt[np.where(y_target == 3), :] = np.roll(Xt[np.where(y_target == 3), :], 40)
+        Xs2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
+        Xs2[:, :, 0] = Xs.squeeze(-1)
+        Xs2[:, :, 1] = Xs.squeeze(-1)
+        Xt2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
+        Xt2[:, :, 0] = Xt.squeeze(-1)
+        Xt2[:, :, 1] = Xt.squeeze(-1)
+        Xs2 = torch.from_numpy(Xs2)
+        Xs2 = Xs2.type(torch.float)
+        y = torch.from_numpy(y)
+        y = y.type(torch.long)
+        Xt2 = torch.from_numpy(Xt2)
+        Xt2 = Xt2.type(torch.float)
+        y_target = torch.from_numpy(y_target)
+        y_target = y_target.type(torch.long)
+        Data_source_train = Data_set(Xs2, y)
+        Data_source_valid = Data_set(Xs2, y)
+        Data_source_test = Data_set(Xs2, y)
+        Data_target_train = Data_set(Xt2, y_target)
+        Data_target_test = Data_set(Xt2, y_target)
+        Data_target_valid = Data_set(Xt2, y_target)
+
+    for batchsize in [256]:
+        for a in [0., 1., 0.1, 0.01, 0.001, 0.0001, 0.00001]:
+            for b in [0., 1., 0.1, 0.01, 0.001, 0.0001, 0.00001]:
+                name_spe = "hyperparameters/" + str(args.alpha) + str(args.beta)
+                name_tarn = "hyperparameters/TARNBZH/0.001/" + str(batchsize) + "/" + str(a) + "/" + str(b) + \
+                            "/TARNBZH"
+                name_har = "hyperparameters/UCIHAR_IT/" + str(args.learning_rate) + "/" + str(batchsize) + "/" + \
+                           str(args.alpha) + "/" + str(args.beta) + "/" + str(args.pair1) + "_" + str(args.pair2) + \
+                           "/HAR_retry"
+                name_for = "hyperparameters/UCIHAR_IT/" + str(args.learning_rate) + "/" + str(batchsize) + "/" + \
+                           str(a) + "/" + str(b) + "/" + str(args.pair1) + "_" + str(args.pair2) + "/HAR_noclass"
+                name2 = "TarnBZH/" + str(args.learning_rate) + str(batchsize) + str(args.alpha) + str(args.beta) \
+                        + str(args.pair1) + "_" + str(args.pair2)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    # print(train_source.shape, train_target.shape)
+                    print(name_for)
+                    CNN_mod = CNNMAD(train_source_data=train_source, train_source_label=train_source_label,
+                                     train_target_data=train_target, test_target_label=test_target_label,
+                                     valid_target_data=valid_target, valid_target_label=valid_target_label,
+                                     valid_source_data=valid_source, valid_source_label=valid_source_label,
+                                     test_source_data=test_source, test_target_data=test_target,
+                                     test_source_label=test_source_label, batchsize=batchsize, name=name_har, lambd=1.,
+                                     alpha=args.alpha, beta=args.beta, channel=chan, MAD_class=classe, num_class=cn,
+                                     big_model=bigmodel, saving=True)
+                    # CNN_mod.load_state_dict(torch.load("hyperparameters/UCIHAR/0.001/256/0.01/0.01/" + str(args.pair1) +
+                    #                                   "_" + str(args.pair2) + "/HAR_best_model_CNN_only.pt"))
+                    # CNN_mod.load_state_dict(torch.load("hyperparameters/UCIHAR/0.001/256/CNN256_only.pt"))
+                    # CNN_mod.load_state_dict(torch.load("hyperparameters/TARNBZH.pt"))
+                    # CNN_mod.load_state_dict(torch.load("hyperparameters/TARNBZH.pt"))
+                    CNN_mod.load_state_dict(torch.load("hyperparameters/UCIHAR/0.001/256/0.01/0.01/" + str(args.pair1)
+                                                       + "_" + str(args.pair2) + "/HAR" + args.name + ".pt"))
+                    best_iteration = CNN_mod.fit(epochs=args.epochs, cnn_epochs=0)
+            # print("train dataset at the end")
+            # CNN_mod.evaluate(Datatrain, dataset_name='train')
+
+
+
+

@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 
 class OTDTW:
-    def __init__(self, X, Y, classe=None, weights_X=None, weights_Y=None, metric="l1", settings=0, laplace_reg=False):
+    def __init__(self, X, Y, classe=None, weights_X=None, weights_Y=None, metric="l1", settings=0):
         self.X = X
         self.Y = Y
         self.shapeX = X.shape
@@ -43,18 +43,6 @@ class OTDTW:
             self.Ya_one = np.ones(self.shapeY[0]) / self.shapeY[0]
         else:
             self.Ya_one = weights_Y
-        self.laplace_reg = laplace_reg
-        if self.laplace_reg:
-            from sklearn.neighbors import kneighbors_graph
-            sS = kneighbors_graph(X=self.X.reshape((self.shapeX[0], -1)), n_neighbors=int(3)).toarray()
-            sS = (sS + sS.T) / 2
-            comp_Y_train = (self.classe.reshape((-1, 1)) == self.classe.reshape((1, -1))) * 1
-            sS = sS * comp_Y_train
-            lS = ot.utils.laplacian(sS)
-            self.lS = lS
-            self.ls2 = self.lS + self.lS.T
-            self.xt2 = np.dot(self.Y.reshape((self.shapeY[0], -1)), self.Y.reshape((self.shapeY[0], -1)).T)
-
         self.OT_tilde = self.init_OT_matrix(settings)
         self.metric = metric
         self.tab_idx = []
@@ -107,6 +95,9 @@ class OTDTW:
             ts[0] = ts[0] + indices_table[indice_moving][0]
             ts[1] = ts[1] + indices_table[indice_moving][1]
         DTW_matrix[-1, -1] = 1
+        """DTW_matrix = np.ones((self.shapeX[1], self.shapeY[1]))
+        zero_mat = np.zeros((self.shapeX[1] - 1, self.shapeY[1] - 1))
+        DTW_matrix[1:, :self.shapeY[1] - 2] = zero_mat"""
         return DTW_matrix
 
     def ugly_four_sum(self):
@@ -150,8 +141,6 @@ class OTDTW:
                     C3 = np.tensordot(np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), pi_DTW), self.Y,
                                       axes=([1, 2], [2, 1]))
                     res = C1[:, None] + C2[None, :] - 2 * C3
-                    print('similar', np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), pi_DTW).shape, self.Y.shape,
-                          C3.shape)
                 elif self.metric == "l1":
                     m1, m2 = self.get_warp_matrices(cl)
                     C1 = np.dot(self.X[self.tab_idx[cl]].transpose(0, -1, 1), m1.T)
@@ -322,27 +311,17 @@ class OTDTW:
 
         return transp
 
-    def main_training(self, init=0, max_init=100, first_step_DTW=True, barycenter=False, ent_reg=0, l1_reg=0):
+    def main_training(self, init=0, max_init=100, first_step_DTW=False, barycenter=False):
         cost = {"Cost": []}
         stop = False
         current_init = 0
         time_mastering = []
         # Begin training
-        false_cost = np.ones(shape=(self.shapeX[0], self.shapeY[0]))
         while stop is not True and current_init < max_init:
             time_start = time.time()
             if (current_init != 0) or (first_step_DTW is False):
                 Cost_OT = self.mat_cost_OT()
-                if ent_reg != 0:
-                    self.OT_tilde = ot.sinkhorn(a=self.Xa_one, b=self.Ya_one, M=Cost_OT/np.max(Cost_OT), reg=ent_reg,
-                                                numItermax=100)
-                elif l1_reg != 0:
-                    print(np.max(Cost_OT))
-                    self.OT_tilde = self.sinkhorn_lpl1_mm(self.Xa_one, self.classe, self.Ya_one,
-                                                          M=Cost_OT/np.max(Cost_OT), reg=l1_reg, numItermax=100)
-                else:
-                    print('hebo')
-                    self.OT_tilde = ot.emd(self.Xa_one, self.Ya_one, Cost_OT, numItermax=1000000)
+                self.OT_tilde = ot.emd(self.Xa_one, self.Ya_one, Cost_OT, numItermax=1000000)
                 score_OT = np.sum(self.OT_tilde * Cost_OT)
                 cost["Cost"].append(score_OT)
 
@@ -369,7 +348,7 @@ class OTDTW:
             transp_X = self.DTW_barycentring_mapping()
             return self.OT_tilde, self.pi_DTW_idx, Cost_OT, score_OT, transp_X
         else:
-            return self.OT_tilde, self.pi_DTW_idx, Cost_OT, score_OT, time_mastering, current_init
+            return self.OT_tilde, self.pi_DTW_idx, Cost_OT
 
 
 class OTonly(OTDTW):
@@ -639,365 +618,19 @@ if __name__ == "__main__":
         n_values = np.max(y) + 1
         return np.eye(n_values)[y]
 
-
-    from tslearn.datasets import CachedDatasets
-
-    Xs, y_train, _, _ = CachedDatasets().load_dataset("Trace")
-    y = y_train - 1
-    Xt = Xs.copy()
-    y_target = y.copy()
-    Xt[np.where(y_target == 0), :] = np.roll(Xt[np.where(y_target == 0), :], 10)  # *0.9
-    Xt[np.where(y_target == 1), :] = np.roll(Xt[np.where(y_target == 1), :], 20)
-    Xt[np.where(y_target == 2), :] = np.roll(Xt[np.where(y_target == 2), :], 30)  # *1.5
-    Xt[np.where(y_target == 3), :] = np.roll(Xt[np.where(y_target == 3), :], 40)  # * .5
-    Xs2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
-    Xs2[:, :, 0] = Xs.squeeze(-1)
-    Xs2[:, :, 1] = Xs.squeeze(-1)
-    Xt2 = np.empty(shape=(Xs.shape[0], Xs.shape[1], 2))
-    Xt2[:, :, 0] = Xt.squeeze(-1)
-    Xt2[:, :, 1] = Xt.squeeze(-1)
-
-    TtoB = OTDTW(Xs2, Xt2, y_train, metric="l2")
-    OT, Cost_OT, score_OT = TtoB.main_training()
-    yt_onehot = to_onehot(y_train.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == y_target.astype(int))
-    print("GW balanced", accuracy)
-
-    # Data preparation
-    """tarn = np.load("tarn_features.npy")
-    tarn_label = np.load('tarn_label.npy')
-    bzh = np.load('bzh_features.npy')
-    bzh_label = np.load('bzh_label.npy')
-    bzh_label = bzh_label.astype(int)
-    bzh_label[np.where(bzh_label == 18)] = 4
-    bzh_label[np.where(bzh_label == 19)] = 6
-    bzh_label = bzh_label - 1
-    tarn_label = tarn_label.astype(int)
-    tarn_label[np.where(tarn_label == 18)] = 4
-    tarn_label[np.where(tarn_label == 19)] = 6
-    tarn_label = tarn_label - 1
-    index_bzh = []
-    index_tarn = []
-    tot_cl = 0
-    for cl in np.unique(bzh_label):
-        diff_cl = len(np.where(bzh_label == cl)[0]) - len(np.where(tarn_label == cl)[0])
-        if diff_cl < 0:
-            diff_ab = np.abs(diff_cl)
-            index_bzh.append(np.where(bzh_label == cl)[0])
-            index_tarn.append(np.where(tarn_label == cl)[0][diff_ab:])
-            tot_cl = tot_cl + len(np.where(bzh_label == cl)[0])
-        else:
-            index_bzh.append(np.where(bzh_label == cl)[0][diff_cl:])
-            index_tarn.append(np.where(tarn_label == cl)[0])
-            tot_cl = tot_cl + len(np.where(tarn_label == cl)[0])
-    bzh_b = np.empty(shape=(tot_cl, bzh.shape[1], bzh.shape[-1]))
-    tarn_b = np.empty(shape=(tot_cl, tarn.shape[1], tarn.shape[-1]))
-    bzh_label_b = np.empty(shape=tot_cl)
-    tarn_label_b = np.empty(shape=tot_cl)
-    filled = 0
-    for cl in np.unique(bzh_label):
-        length_cl = len(index_bzh[cl])
-        bzh_b[filled:filled+length_cl] = bzh[index_bzh[cl]]
-        tarn_b[filled:filled+length_cl] = tarn[index_tarn[cl]]
-        bzh_label_b[filled:filled+length_cl] = bzh_label[index_bzh[cl]]
-        tarn_label_b[filled:filled+length_cl] = tarn_label[index_tarn[cl]]
-        filled = filled + length_cl
-    np.save('tarn_features_b.npy', tarn_b)
-    np.save('tarn_label_b.npy', tarn_label_b)
-    np.save('bzh_features_b.npy', bzh_b)
-    np.save('bzh_label_b.npy', bzh_label_b)"""
-    # Data preparation end
-
-    """TtoB = OTonly(tarn_b, bzh_b)
-    OT, Cost_OT, score_OT = TtoB.main_training(GW=True)
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print("GW balanced", accuracy)"""
-
-    """knn_clf = KNeighborsTimeSeriesClassifier(n_neighbors=3, metric="dtw")
-    knn_clf.fit(tarn_b, tarn_label_b)
-    predicted_labels = knn_clf.predict(bzh_b)
-    print("\n2. Nearest neighbor classification using DTW")
-    print("Correct classification rate:", accuracy_score(bzh_label_b, predicted_labels))"""
-
-    """TtoB = OTonly(tarn_b, bzh_b)
-    OT, Cost_OT, score_OT = TtoB.main_training(COOT=True)
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print("COOT balanced", accuracy)"""
-
-    """tarn_b = np.load('tarn_features_b.npy')
-    tarn_label_b = np.load('tarn_label_b.npy')
-    bzh_b = np.load('bzh_features_b.npy')
-    bzh_label_b = np.load('bzh_label_b.npy')
-
-    TtoB = OTDTW(tarn_b, bzh_b, tarn_label_b)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print(accuracy, "class balanced")"""
-
-    """"print("l1")
-
-    TtoB = OTDTW(tarn_b, bzh_b)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training(l1_reg=True)
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print(accuracy, "l1, l2 balanced")
-
-    TtoB = OTDTW(tarn, bzh)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training(l1_reg=True)
-    yt_onehot = to_onehot(tarn_label.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label.astype(int))
-    print(accuracy, "l1, l2")"""
-
-    """for lambd in (0.001, 0.01, 0.1, 1, 10, 100):
-        TtoB = OTDTW(tarn_b, bzh_b)
-        OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training(ent_reg=lambd)
-        np.save('OT_reg' + str(lambd) + '.npy', OT)
-        yt_onehot = to_onehot(tarn_label_b.astype(int))
+    for pair in [[2, 11], [7, 13], [12, 16], [12, 18], [9, 18], [18, 23], [6, 23], [7, 24], [17, 25]]:
+        source = np.load("/home/adr2.local/painblanc_f/codats-master/datas/numpy_data/ucihar_" + str(pair[0]) +
+                         "train.npy")
+        source_label = np.load("/home/adr2.local/painblanc_f/codats-master/datas/numpy_data/ucihar_" + str(pair[0]) +
+                               "train_labels.npy")
+        target = np.load("/home/adr2.local/painblanc_f/codats-master/datas/numpy_data/ucihar_" + str(pair[1]) +
+                         "train.npy")
+        target_label = np.load("/home/adr2.local/painblanc_f/codats-master/datas/numpy_data/ucihar_" + str(pair[1]) +
+                               "train_labels.npy")
+        MAD = OTDTW(X=source, Y=target, classe=source_label, metric="l1")
+        OT, DTW, Cost = MAD.main_training()
+        yt_onehot = to_onehot(source_label.astype(int))
         y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-        accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-        print("reg, lambda", lambd, "accuracy", accuracy)
+        accuracy = np.mean(y_pred == target_label.astype(int))
+        print(pair, accuracy)
 
-    for lambd in (0.001, 0.01, 0.1, 1, 10, 100):
-        TtoB = OTDTW(tarn_b, bzh_b)
-        OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training(l1_reg=lambd)
-        np.save('OT_l1' + str(lambd) + '.npy', OT)
-        yt_onehot = to_onehot(tarn_label_b.astype(int))
-        y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-        accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-        print("l1, lambda", lambd, "accuracy", accuracy)"""
-
-    """TtoB = OTDTW(tarn_b, bzh_b, tarn_label_b)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    np.save('DTW_class.npy', DTW)"""
-
-    """knn_clf = KNeighborsTimeSeriesClassifier(n_neighbors=1, metric="dtw")
-    knn_clf.fit(tarn, tarn_label)
-    predicted_labels = knn_clf.predict(bzh)
-    print("\n2. Nearest neighbor classification using DTW not balanced 1 nn")
-    print("Correct classification rate:", accuracy_score(bzh_label, predicted_labels))"""
-
-    """TtoB = OTDTW(tarn_b, bzh_b)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    np.save('DTW_tarn_bzh_b.npy', DTW[0])
-
-    TtoB = OTDTW(tarn, bzh)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    np.save('DTW_tarn_bzh.npy', DTW[0])"""
-
-    """X_weight = weighting(tarn_label_b, bzh_label_b)
-    TtoB = OTDTW(tarn_b, bzh_b, weights_X=X_weight)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print(accuracy)
-
-    TtoB = OTDTW(tarn_b, bzh_b, tarn_label_b, weights_X=X_weight)
-    OT, DTW, Cost_OT, score_OT, time_mastering, init = TtoB.main_training()
-    yt_onehot = to_onehot(tarn_label_b.astype(int))
-    y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-    accuracy = np.mean(y_pred == bzh_label_b.astype(int))
-    print(accuracy)"""
-
-    # exp_launching('ucihar', har_indiv, reg=False, classe=False, WS=False)
-    # exp_launching('uwave', uwave_indiv, cnn=False, reg=False, classe=False, WS=False, OTb=True)
-
-    # exp_launching('ucihar', har_indiv, reg=False, cnn=False, classe=False, WS=False)
-    # exp_launching('ucihar', har_indiv, reg=True, cnn=False, classe=False, WS=False)
-
-    """exp_launching('uwave', uwave_indiv, reg=False, classe=False, WS=False)
-    exp_launching('uwave', uwave_indiv, reg=False, classe=False, WS=True)
-    exp_launching('uwave', uwave_indiv, reg=False, classe=True, WS=False)
-    exp_launching('uwave', uwave_indiv, reg=False, classe=True, WS=True)"""
-
-    """exp_launching('uwave', uwave_indiv, cnn=False, reg=True, classe=True)
-    exp_launching('uwave', uwave_indiv, cnn=False, reg=True, classe=True, WS=False)
-    exp_launching('uwave', uwave_indiv, cnn=False, reg=True, classe=False, WS=False)
-
-    exp_launching('ucihhar', hhar_indiv, cnn=False, reg=False, classe=False)
-    exp_launching('ucihhar', hhar_indiv, cnn=False, reg=True, classe=False)
-    exp_launching('ucihhar', hhar_indiv, cnn=False, reg=True, classe=True)
-    exp_launching('ucihhar', hhar_indiv, cnn=False, reg=True, classe=True, WS=False)
-    exp_launching('ucihhar', hhar_indiv, cnn=False, reg=True, classe=False, WS=False)"""
-
-    """data_sources = [har_indiv]
-    data_name = ['ucihar']
-
-    # OTDTW with CNN no class with regul no WS
-    for data in range(0, 1):
-        print("********", data_name[data])
-        data_s = data_sources[data]
-        results = []
-        for indiv in data_s:
-            train, _ = load(data_name[data] + '_' + str(indiv[0]))
-            test, _ = load(data_name[data] + '_' + str(indiv[1]))
-            X_train = train.train_data
-            y_train = train.train_labels.astype(int)
-            X_test = test.train_data
-            y_test = test.train_labels.astype(int)
-            OTDTW_bary = OTDTW(X_train, X_test, laplace_reg=True)
-            OT, DTW, cost, Score, transfer_X = OTDTW_bary.main_training(barycenter=True)
-            nb_cl = len(np.unique(y_train))
-            model_cnn = CNN_class(X_train=transfer_X, y_train=y_train, num_classes=nb_cl, batchsize=32, epoch=10000)
-            model_cnn.train()
-            accuracy = model_cnn.evaluate(X_test, y_test)
-            results.append([indiv[0], indiv[1], accuracy])
-        with open(data_name[data] + '_otdtw_CNN_reg.csv', 'w') as file:
-            writer = csv.writer(file, delimiter=' ', quotechar='"')
-            writer.writerows([["Indiv source", "Indiv target", "Accuracy"]])
-            writer.writerows(results)
-
-    # OTDTW no CNN no class with regul no WS
-    for data in range(0, 1):
-        print("********", data_name[data])
-        data_s = data_sources[data]
-        results = []
-        for indiv in data_s:
-            train, _ = load(data_name[data] + '_' + str(indiv[0]))
-            test, _ = load(data_name[data] + '_' + str(indiv[1]))
-            X_train = train.train_data
-            y_train = train.train_labels.astype(int)
-            X_test = test.train_data
-            y_test = test.train_labels.astype(int)
-            OTDTW_bary = OTDTW(X_train, X_test, laplace_reg=True)
-            OT, DTW, cost, Score = OTDTW_bary.main_training(barycenter=False)
-            yt_onehot = to_onehot(y_train.astype(int))
-            y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-            accuracy = np.mean(y_pred == y_test.astype(int))
-            results.append([indiv[0], indiv[1], accuracy])
-        with open(data_name[data] + '_otdtw_regul.csv', 'w') as file:
-            writer = csv.writer(file, delimiter=' ', quotechar='"')
-            writer.writerows([["Indiv source", "Indiv target", "Accuracy"]])
-            writer.writerows(results)
-
-    # OTDTW with CNN with class with regul no WS
-    for data in range(0, 1):
-        print("********", data_name[data])
-        data_s = data_sources[data]
-        results = []
-        for indiv in data_s:
-            train, _ = load(data_name[data] + '_' + str(indiv[0]))
-            test, _ = load(data_name[data] + '_' + str(indiv[1]))
-            X_train = train.train_data
-            y_train = train.train_labels.astype(int)
-            X_test = test.train_data
-            y_test = test.train_labels.astype(int)
-            OTDTW_bary = OTDTW(X_train, X_test, y_train, laplace_reg=True)
-            OT, DTW, cost, Score, transfer_X = OTDTW_bary.main_training(barycenter=True)
-            nb_cl = len(np.unique(y_train))
-            model_cnn = CNN_class(X_train=transfer_X, y_train=y_train, num_classes=nb_cl, batchsize=32, epoch=10000)
-            model_cnn.train()
-            y_pred = np.zeros(shape=(X_test.shape[0], len(np.unique(y_train))))
-            all_num_path = []
-            for cl in np.unique(y_train):
-                all_num_path.append(int(DTW[cl].sum()))
-            max_num_path = np.max(all_num_path)
-            for cl in np.unique(y_train):
-                m1, m2 = get_warp_matrices(DTW[cl])
-                partial_OT = OT[np.where(y_train == cl)]
-                indexing_train, indexing_test = np.nonzero(partial_OT)
-                X_test_cl = np.dot(X_test[np.unique(indexing_test)].transpose(0, -1, 1), m2.T)
-                X_test_dtw = np.zeros(shape=(len(np.unique(indexing_test)), max_num_path, X_test.shape[-1]))
-                X_test_dtw[:, :all_num_path[cl]] = X_test_cl.transpose(0, -1, 1)
-                pred_cl = model_cnn.predict(X_test_dtw)
-                for j in range(0, len(np.unique(indexing_test))):
-                    y_pred[indexing_test[j]] = y_pred[indexing_test[j]] + partial_OT[:, j].sum() * pred_cl[j]
-            y_acc = np.argmax(y_pred, axis=1)
-            accuracy = np.mean(y_test == y_acc)
-            results.append([indiv[0], indiv[1], accuracy])
-        with open(data_name[data] + '_otdtw_CNN_class_reg.csv', 'w') as file:
-            writer = csv.writer(file, delimiter=' ', quotechar='"')
-            writer.writerows([["Indiv source", "Indiv target", "Accuracy"]])
-            writer.writerows(results)
-
-    # OTDTW with CNN no class with regul with WS
-    for data in range(0, 1):
-        print("********", data_name[data])
-        data_s = data_sources[data]
-        results = []
-        for indiv in data_s:
-            train, _ = load(data_name[data] + '_' + str(indiv[0]))
-            test, _ = load(data_name[data] + '_' + str(indiv[1]))
-            X_train = train.train_data
-            y_train = train.train_labels.astype(int)
-            X_test = test.train_data
-            y_test = test.train_labels.astype(int)
-            weight_x = weighting(y_train, y_test)
-            OTDTW_bary = OTDTW(X_train, X_test, laplace_reg=True, weights_X=weight_x)
-            OT, DTW, cost, Score, transfer_X = OTDTW_bary.main_training(barycenter=True)
-            nb_cl = len(np.unique(y_train))
-            model_cnn = CNN_class(X_train=transfer_X, y_train=y_train, num_classes=nb_cl, batchsize=32, epoch=10000)
-            model_cnn.train()
-            accuracy = model_cnn.evaluate(X_test, y_test)
-            results.append([indiv[0], indiv[1], accuracy])
-        with open(data_name[data] + '_otdtw_cnn_reg_WS.csv', 'w') as file:
-            writer = csv.writer(file, delimiter=' ', quotechar='"')
-            writer.writerows([["Indiv source", "Indiv target", "Accuracy"]])
-            writer.writerows(results)"""
-
-    """for indiv in wisdm_class:
-        train, _ = load('wisdm_ar_' + str(indiv[0]))
-        test, _ = load('wisdm_ar_' + str(indiv[1]))
-        X_train = train.train_data
-        y_train = train.train_labels
-        X_test = test.train_data
-        y_test = test.train_labels
-        weight_X = weighting(y_train.astype(int), y_test.astype(int))
-        uci = OTDTW(X_train, X_test, y_train.astype(int), weight_X, metric="l1")
-        OT, DTW, Cost, score = uci.main_training()
-        yt_onehot = to_onehot(y_train.astype(int))
-        y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-        acc = np.mean(y_pred == y_test.astype(int))
-        print("From ", indiv[0], "to ", indiv[1], acc)
-        plt.clf()
-        plt.imshow(DTW[0])
-        plt.savefig('WISMD_classe_' + str(indiv[0]) + "to" + str(indiv[1]) + '_DTW')"""
-
-    """for data in range(0, 4):
-        data_s = data_sources[data]
-        for indiv in data_s:
-            train, _ = load(data_name[data] + '_' + str(indiv[0]))
-            test, _ = load(data_name[data] + '_' + str(indiv[1]))
-            X_train = train.train_data
-            y_train = train.train_labels
-            X_test = test.train_data
-            y_test = test.train_labels
-            '''weight_X = weighting(y_train.astype(int), y_test.astype(int))
-            uci = OTDTW(X_train, X_test, y_train.astype(int), weight_X, metric="l1")
-            OT, DTW, Cost, score = uci.main_training()'''
-            DTW_cost = tslm.cdist_dtw(X_train, X_test)
-            Xa_one = np.ones(X_train.shape[0]) / X_train.shape[0]
-            Ya_one = np.ones(X_test.shape[0]) / X_test.shape[0]
-            OT = ot.emd(Xa_one, Ya_one, DTW_cost, numItermax=10000000)
-            yt_onehot = to_onehot(y_train.astype(int))
-            y_pred = np.argmax(np.dot(OT.T, yt_onehot), axis=1)
-            acc = np.mean(y_pred == y_test.astype(int))
-            print("From ", indiv[0], "to ", indiv[1], acc)"""
-
-    """for indiv in [[7, 30], [0, 8]]:
-        train, _ = load('wisdm_ar_' + str(indiv[0]))
-        test, _ = load('wisdm_ar_' + str(indiv[1]))
-        print(type(train))
-        X_train = train.train_data
-        print(type(X_train))
-        y_train = train.train_labels
-        X_test = test.train_data
-        y_test = test.train_labels
-        uci = OTDTW(X_train, X_test, metric="l1")
-        OT, DTW, Cost, score = uci.main_training()
-        DTW_train, DTW_test = get_warp_matrices(DTW[0])
-        train_DTW = np.dot(X_train.transpose(0, -1, 1), DTW_train.T)
-        test_DTW = np.dot(X_test.transpose(0, -1, 1), DTW_test.T)
-        barycenter = ot.bregman.convolutional_barycenter2d(test_DTW, reg=0.1)
-        train_transferred = np.tensordot(train_DTW, barycenter, axes=([1, 2], [0, 1]))
-        classif = methods.MethodNone(train_transferred, test_DTW, "None")
-        classif.train_step()"""
